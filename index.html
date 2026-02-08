@@ -3,15 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Louisiana Weather & Hazards Map</title>
+  <title>Louisiana Live Weather (NWS)</title>
 
   <link rel="stylesheet"
         href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
         crossorigin="" />
 
+  <!-- MarkerCluster CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+
   <style>
     html, body, #map { height: 100%; margin: 0; }
+
     .panel {
       position: absolute; top: 10px; right: 10px; z-index: 1000;
       width: 460px; max-height: 90vh; overflow: auto;
@@ -23,10 +28,12 @@
     .muted { color: #555; }
     .small { font-size: 12px; }
     .hr { border-top:1px solid #eee; margin:10px 0; }
+
     .pill {
       display:inline-block; padding: 2px 8px; border-radius: 999px;
       background:#f3f3f3; border:1px solid #e7e7e7; margin: 0 6px 6px 0;
     }
+
     .kpi { display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:8px; }
     .kpi > div { border:1px solid #eee; border-radius:10px; padding:8px; }
     .kpi strong { display:block; font-size:12px; color:#555; margin-bottom:4px; }
@@ -59,7 +66,6 @@
       max-width: 420px;
     }
     .legend strong { display:block; margin-bottom:4px; }
-    .note { margin-top: 6px; }
   </style>
 </head>
 
@@ -67,34 +73,36 @@
   <div id="map"></div>
 
   <div class="panel">
-    <h2>Louisiana Weather & Hazards</h2>
+    <h2>Louisiana Live Weather</h2>
     <div class="muted small">
-      Click the map or a pin for current conditions + hourly forecast.
-      Use the layer control to turn on stations, METAR pins, rainfall, gauges, radar, alerts, and boundaries.
+      Click the map or a station pin to load current observations + hourly forecast.
+      Use the layer control to toggle radar, alerts, boundaries, parishes, and station pins.
     </div>
 
     <div class="hr"></div>
+
     <div id="status" class="muted"></div>
     <div id="content"></div>
 
     <div class="hr"></div>
     <div class="small muted">
-      If a layer fails to load, it’s usually temporary service/CORS issues—other layers will still work.
+      Tip: Station pins are clustered — zoom in to see individual stations.
     </div>
   </div>
 
   <div class="legend">
     <strong>What you’re seeing</strong>
     <div>• Radar = NWS MRMS base reflectivity</div>
-    <div>• Rainfall = MRMS QPE (estimated precip)</div>
     <div>• Alerts = active NWS alerts</div>
-    <div>• “Current conditions” = nearest reporting station; forecast = NWS grid for that point</div>
-    <div class="note muted">Tip: For SRCC-like behavior, click METAR/ASOS pins (airport stations).</div>
+    <div>• Current conditions = nearest reporting station; forecast = NWS grid for that point</div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
           crossorigin=""></script>
+
+  <!-- MarkerCluster JS -->
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
   <script>
     // ============================================================
@@ -105,38 +113,19 @@
     const ALERT_REFRESH_MS = 2 * 60 * 1000;
     const RADAR_REFRESH_MS = 5 * 60 * 1000;
 
-    // Show parishes automatically when zoomed in (reduces clutter)
+    // Parish boundaries auto-show at/above this zoom
     const PARISH_SHOW_ZOOM = 9;
 
-    // NWS station candidates to test (nearest first). Larger = more reliable but more requests.
+    // For choosing a usable station for “current conditions”
     const STATION_CANDIDATES = 10;
 
-    // MRMS rainfall WMS (MapServer WMS): QPE is commonly provided; if a layer name differs, you can adjust.
-    // If this endpoint ever changes, the rest of the site still works.
-    const MRMS_QPE_WMS = "https://mapservices.weather.noaa.gov/eventdriven/services/radar/mrms_qpe_24hr/MapServer/WMSServer";
-
-    // USGS NWIS "sites" service (returns station list); we'll query within LA bounding box.
-    // Some days CORS is fine; if not, gauges layer will fail gracefully.
-    const USGS_SITES = "https://waterservices.usgs.gov/nwis/site/?format=rdb&stateCd=la&siteType=ST&siteStatus=active";
-
-    // AviationWeather Data API (METAR) — SRCC-like airport pins.
-    // We'll use a curated list to keep it fast & reliable (free and no key).
-    const METAR_STATIONS_LA = [
-      { id:"KBTR", name:"Baton Rouge", lat:30.5332, lon:-91.1496 },
-      { id:"KMSY", name:"New Orleans (MSY)", lat:29.9934, lon:-90.2580 },
-      { id:"KNEW", name:"New Orleans (NEW)", lat:30.0424, lon:-90.0283 },
-      { id:"KSHV", name:"Shreveport", lat:32.4466, lon:-93.8256 },
-      { id:"KAEX", name:"Alexandria", lat:31.3274, lon:-92.5498 },
-      { id:"KLCH", name:"Lake Charles", lat:30.1261, lon:-93.2234 },
-      { id:"KLFT", name:"Lafayette", lat:30.2053, lon:-91.9876 },
-      { id:"KMLU", name:"Monroe", lat:32.5109, lon:-92.0377 },
-      { id:"KHUM", name:"Houma", lat:29.5665, lon:-90.6604 },
-      { id:"KASD", name:"Slidell", lat:30.3450, lon:-89.8208 }
-    ];
-    const AVIATIONWEATHER_METAR = "https://aviationweather.gov/api/data/metar"; // JSON supported in their docs
+    // For station loading pagination
+    const STATION_PAGE_LIMIT = 500;
+    const STATION_MAX_PAGES = 30; // safety
+    const STATION_MAX_TOTAL = 8000; // safety
 
     // ============================================================
-    // Map + base layers
+    // Map + basemaps
     // ============================================================
     const map = L.map('map', { zoomControl: true }).setView([30.95, -91.9], 7);
 
@@ -150,7 +139,7 @@
     );
 
     // ============================================================
-    // NWS Radar WMS
+    // Radar WMS (NWS MRMS base reflectivity)
     // ============================================================
     const radarWmsUrl =
       'https://mapservices.weather.noaa.gov/eventdriven/services/radar/radar_base_reflectivity/MapServer/WMSServer';
@@ -163,6 +152,7 @@
       opacity: 0.55,
       uppercase: true
     });
+
     const _radarTile = radar.getTileUrl.bind(radar);
     radar.getTileUrl = function(coords){
       const url = _radarTile(coords);
@@ -170,23 +160,12 @@
       return url + join + 'cb=' + radarCacheBuster;
     };
 
-    // ============================================================
-    // MRMS Rainfall overlay (24hr QPE). If the service is unavailable, it will just not display.
-    // ============================================================
-    let qpeCacheBuster = Date.now();
-    const qpe24 = L.tileLayer.wms(MRMS_QPE_WMS, {
-      layers: '1',
-      format: 'image/png',
-      transparent: true,
-      opacity: 0.55,
-      uppercase: true
-    });
-    const _qpeTile = qpe24.getTileUrl.bind(qpe24);
-    qpe24.getTileUrl = function(coords){
-      const url = _qpeTile(coords);
-      const join = url.includes('?') ? '&' : '?';
-      return url + join + 'cb=' + qpeCacheBuster;
-    };
+    function refreshRadar() {
+      radarCacheBuster = Date.now();
+      const op = radar.options.opacity;
+      radar.setOpacity(op - 0.0001);
+      radar.setOpacity(op);
+    }
 
     // ============================================================
     // Alerts layer
@@ -214,58 +193,50 @@
       }
     });
 
+    async function refreshAlerts() {
+      const url = "https://api.weather.gov/alerts/active?area=LA";
+      try {
+        const res = await fetch(url, { headers: { "Accept": "application/geo+json" } });
+        if (!res.ok) throw new Error(`alerts failed (${res.status})`);
+        const data = await res.json();
+        alertsLayer.clearLayers();
+        if (data.features?.length) alertsLayer.addData(data);
+      } catch (e) {
+        console.warn("Alerts refresh failed:", e);
+      }
+    }
+
     // ============================================================
-    // Boundaries (your files)
+    // Boundaries (your GeoJSON files)
     // ============================================================
     const stateBoundary = L.geoJSON(null, { style: { weight: 3, fillOpacity: 0 } });
+
     const parishes = L.geoJSON(null, {
       style: { weight: 1, fillOpacity: 0 },
       onEachFeature: (f, layer) => layer.bindTooltip(pickNameField(f.properties||{}), { sticky: true })
     });
 
-    // Parish pins (centroids)
-    const parishPins = L.layerGroup();
+    async function loadBoundaries() {
+      try {
+        const [stateRes, parishRes] = await Promise.all([
+          fetch("./louisiana_state_boundary.geojson"),
+          fetch("./louisiana_parishes.geojson")
+        ]);
+        if (!stateRes.ok) throw new Error("Missing louisiana_state_boundary.geojson");
+        if (!parishRes.ok) throw new Error("Missing louisiana_parishes.geojson");
 
-    // ============================================================
-    // NWS stations (data-intensive pins)
-    // We'll load from the NWS API using a LA bbox via stations endpoint is non-trivial,
-    // so we reuse /points lookups via parish centroids only (fast) AND offer METAR/ASOS network.
-    // If you want *every* NWS station as pins, that’s best done with a small caching backend.
-    // ============================================================
+        const stateJson = await stateRes.json();
+        const parishJson = await parishRes.json();
 
-    // ============================================================
-    // METAR/ASOS pins (SRCC-like)
-    // ============================================================
-    const metarPins = L.layerGroup();
+        stateBoundary.addData(stateJson);
+        parishes.addData(parishJson);
 
-    // ============================================================
-    // USGS gauge pins
-    // ============================================================
-    const usgsPins = L.layerGroup();
-
-    // ============================================================
-    // Layer control
-    // ============================================================
-    const baseMaps = { "OpenStreetMap": osm, "Satellite (Esri)": esri };
-
-    const overlays = {
-      "Radar (Reflectivity)": radar,
-      "Rainfall (MRMS 24hr QPE)": qpe24,
-      "NWS Alerts": alertsLayer,
-      "LA State Boundary": stateBoundary,
-      "LA Parishes": parishes,
-      "Parish Pins": parishPins,
-      "METAR/ASOS Pins (airport stations)": metarPins,
-      "USGS River Gauges": usgsPins
-    };
-
-    L.control.layers(baseMaps, overlays, { collapsed: false }).addTo(map);
-
-    // Defaults on
-    radar.addTo(map);
-    alertsLayer.addTo(map);
-    stateBoundary.addTo(map);
-    metarPins.addTo(map);
+        // show parishes only if zoomed in
+        if (map.getZoom() >= PARISH_SHOW_ZOOM) parishes.addTo(map);
+      } catch (e) {
+        console.warn("Boundary load failed:", e);
+      }
+    }
 
     map.on('zoomend', () => {
       const z = map.getZoom();
@@ -277,10 +248,95 @@
     });
 
     // ============================================================
-    // UI + utility
+    // Statewide NWS Stations (clustered pins)
+    // ============================================================
+    const nwsStationsCluster = L.markerClusterGroup({
+      chunkedLoading: true
+    });
+
+    async function loadStatewideNWSStations() {
+      setStatus("Loading statewide NWS stations… (first load may take ~10–30 seconds)", "muted", true);
+
+      let offset = 0;
+      let total = 0;
+
+      for (let page = 0; page < STATION_MAX_PAGES; page++) {
+        const url = `https://api.weather.gov/stations?state=LA&limit=${STATION_PAGE_LIMIT}&offset=${offset}`;
+
+        const res = await fetch(url, { headers: { "Accept": "application/geo+json" } });
+        if (!res.ok) {
+          throw new Error(`Stations request failed (${res.status})`);
+        }
+
+        const json = await res.json();
+        const feats = json.features || [];
+        if (!feats.length) break;
+
+        for (const f of feats) {
+          const id = f.properties?.stationIdentifier;
+          const name = f.properties?.name || id || "Station";
+          const coords = f.geometry?.coordinates; // [lon, lat]
+          if (!id || !coords || coords.length < 2) continue;
+
+          const lon = coords[0], lat = coords[1];
+
+          const marker = L.marker([lat, lon]);
+          marker.bindTooltip(`${name} (${id})`, { sticky: true });
+
+          marker.on("click", async () => {
+            map.setView([lat, lon], Math.max(map.getZoom(), 9));
+            await loadPointWeather(lat, lon, `${name} (${id})`);
+
+            // Optional: also show latest observation in a popup for quick glance
+            try {
+              const o = await fetch(`https://api.weather.gov/stations/${id}/observations/latest`, {
+                headers: { "Accept": "application/geo+json" }
+              });
+              if (o.ok) {
+                const oj = await o.json();
+                const p = oj.properties || {};
+                const tC = p.temperature?.value;
+                const tF = (tC != null) ? (tC * 9/5 + 32) : null;
+
+                marker.bindPopup(`
+                  <div style="font:14px/1.35 system-ui;">
+                    <div><strong>${escapeHtml(name)}</strong> (${escapeHtml(id)})</div>
+                    <div class="muted small">${escapeHtml(p.timestamp || "")}</div>
+                    <div style="margin-top:6px;">
+                      ${tF != null ? `Temp: <strong>${tF.toFixed(1)} °F</strong><br/>` : ""}
+                      ${p.textDescription ? `Wx: <strong>${escapeHtml(p.textDescription)}</strong>` : ""}
+                    </div>
+                  </div>
+                `);
+                marker.openPopup();
+              }
+            } catch {
+              // ignore
+            }
+          });
+
+          nwsStationsCluster.addLayer(marker);
+          total++;
+          if (total >= STATION_MAX_TOTAL) break;
+        }
+
+        if (total >= STATION_MAX_TOTAL) break;
+
+        // If less than a full page, assume end
+        if (feats.length < STATION_PAGE_LIMIT) break;
+
+        offset += STATION_PAGE_LIMIT;
+      }
+
+      setStatus(`Loaded ${total} NWS stations. Zoom in and click pins for weather.`, "ok", false);
+    }
+
+    // ============================================================
+    // Click-to-weather (map click OR station click)
     // ============================================================
     const statusEl = document.getElementById('status');
     const contentEl = document.getElementById('content');
+    let clickMarker = null;
 
     function setStatus(msg, cls="muted", spinning=false) {
       statusEl.className = cls;
@@ -293,17 +349,13 @@
       return String(val);
     }
 
+    // conversions
     const cToF = c => (c * 9/5) + 32;
     const mpsToMph = mps => mps * 2.2369362920544;
     const paToInHg = pa => pa * 0.00029529983071445;
     const mToMiles = m => m * 0.000621371;
     const mmToIn = mm => mm / 25.4;
 
-    let clickMarker = null;
-
-    // ============================================================
-    // NWS Click -> current conditions + hourly + MapClick link
-    // ============================================================
     async function loadPointWeather(lat, lon, label="Map click") {
       setStatus(`Loading weather for ${label}…`, "muted", true);
       contentEl.innerHTML = "";
@@ -319,23 +371,25 @@
         const pJson = await pRes.json();
         const props = pJson.properties;
 
-        // Forecast zone -> zoneid for MapClick (LAZ069 style)
+        // Zone -> MapClick (LAZ069 style)
         const forecastZoneUrl = props.forecastZone;
         const zoneId = forecastZoneUrl ? String(forecastZoneUrl).split("/").pop() : null;
+
         const mapClickUrl = zoneId
           ? `https://forecast.weather.gov/MapClick.php?zoneid=${encodeURIComponent(zoneId)}`
           : `https://forecast.weather.gov/MapClick.php?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
 
-        // stations list
+        // Stations list near the point
         const stationsUrl = props.observationStations;
         const sRes = await fetch(stationsUrl, { headers: { "Accept": "application/geo+json" } });
         if (!sRes.ok) throw new Error(`Stations list failed (${sRes.status})`);
         const sJson = await sRes.json();
 
-        // choose best station among nearest candidates by “first that returns obs”
+        // Pick first station that returns valid obs
         const best = await chooseBestStation(lat, lon, sJson);
+        const obs = best.obs;
 
-        // hourly forecast
+        // Hourly forecast
         let hours = [];
         if (props.forecastHourly) {
           const hRes = await fetch(props.forecastHourly, { headers: { "Accept": "application/geo+json" } });
@@ -345,11 +399,9 @@
           }
         }
 
-        // render
         setStatus(`Loaded: ${label}`, "ok", false);
 
-        const obs = best.obs;
-
+        // Extract useful fields
         const tempF = (obs?.temperature?.value != null) ? cToF(obs.temperature.value) : null;
         const dewF  = (obs?.dewpoint?.value != null) ? cToF(obs.dewpoint.value) : null;
         const rh    = obs?.relativeHumidity?.value;
@@ -376,7 +428,8 @@
 
           <div class="hr"></div>
 
-          <div><strong>Nearest reporting station:</strong> ${escapeHtml(best.stationName || "—")} ${best.stationId ? `(${escapeHtml(best.stationId)})` : ""}</div>
+          <div><strong>Nearest reporting station:</strong> ${escapeHtml(best.stationName || "—")}
+            ${best.stationId ? `(${escapeHtml(best.stationId)})` : ""}</div>
           <div class="small muted">Observed: ${escapeHtml(obs?.timestamp || "—")}</div>
 
           <div class="kpi">
@@ -410,6 +463,7 @@
             </ul>
           ` : `<div class="muted">Hourly forecast not available right now.</div>`}
         `;
+
       } catch (err) {
         setStatus("Weather data failed to load.", "err", false);
         contentEl.innerHTML = `<div class="err"><strong>Error:</strong> ${escapeHtml(String(err))}</div>`;
@@ -419,7 +473,7 @@
     map.on("click", e => loadPointWeather(e.latlng.lat, e.latlng.lng, "Map click"));
 
     // ============================================================
-    // Station selection helper
+    // Station selection helpers
     // ============================================================
     function haversineKm(lat1, lon1, lat2, lon2) {
       const R = 6371;
@@ -473,211 +527,8 @@
     }
 
     // ============================================================
-    // Load boundaries + parish pins
+    // Misc helpers
     // ============================================================
-    async function loadBoundariesAndParishPins() {
-      try {
-        const [stateRes, parishRes] = await Promise.all([
-          fetch("./louisiana_state_boundary.geojson"),
-          fetch("./louisiana_parishes.geojson")
-        ]);
-        if (!stateRes.ok) throw new Error("State boundary GeoJSON missing (check filename/path).");
-        if (!parishRes.ok) throw new Error("Parishes GeoJSON missing (check filename/path).");
-
-        const stateJson = await stateRes.json();
-        const parishJson = await parishRes.json();
-
-        stateBoundary.addData(stateJson);
-        parishes.addData(parishJson);
-
-        // Create parish centroid pins
-        let count = 0;
-        for (const f of (parishJson.features || [])) {
-          const name = pickNameField(f.properties || {});
-          const centroid = polygonCentroidSafe(f.geometry);
-          if (!centroid) continue;
-
-          const [clon, clat] = centroid;
-          const m = L.circleMarker([clat, clon], { radius: 5, weight: 2, fillOpacity: 0.85 });
-          m.bindTooltip(name, { sticky: true });
-          m.on("click", () => {
-            map.setView([clat, clon], Math.max(map.getZoom(), 9));
-            loadPointWeather(clat, clon, name);
-          });
-          m.addTo(parishPins);
-
-          count++;
-          if (count > 200) break; // safety
-        }
-      } catch (e) {
-        console.warn(e);
-        setStatus("Loaded map, but parish boundaries/pins failed (check filenames).", "err", false);
-      }
-    }
-
-    // ============================================================
-    // METAR pins + click opens NWS MapClick as well
-    // ============================================================
-    function buildMetarPins() {
-      metarPins.clearLayers();
-      for (const s of METAR_STATIONS_LA) {
-        const m = L.marker([s.lat, s.lon]);
-        m.bindPopup(`<strong>${escapeHtml(s.name)}</strong><br/>METAR: ${escapeHtml(s.id)}<br/><span class="muted">Click to load weather</span>`);
-        m.on("click", () => {
-          map.setView([s.lat, s.lon], Math.max(map.getZoom(), 9));
-          loadPointWeather(s.lat, s.lon, `${s.name} (METAR ${s.id})`);
-          loadMetarIntoPanel(s.id);
-        });
-        m.addTo(metarPins);
-      }
-    }
-
-    async function loadMetarIntoPanel(stationId) {
-      // This augments the panel with raw METAR if available.
-      // If the API blocks CORS, it fails silently.
-      try {
-        const url = `${AVIATIONWEATHER_METAR}?ids=${encodeURIComponent(stationId)}&format=json&hours=2`;
-        const res = await fetch(url);
-        if (!res.ok) return;
-        const data = await res.json();
-        const metar = data?.[0]?.rawOb || data?.[0]?.raw || data?.[0]?.raw_text;
-
-        if (!metar) return;
-
-        // Append at bottom (don’t overwrite main NWS content)
-        const div = document.createElement("div");
-        div.className = "hr";
-        contentEl.appendChild(div);
-
-        const box = document.createElement("div");
-        box.innerHTML = `
-          <div><strong>Raw METAR (${escapeHtml(stationId)})</strong></div>
-          <div class="small muted" style="margin-top:4px;">${escapeHtml(metar)}</div>
-        `;
-        contentEl.appendChild(box);
-      } catch {
-        // ignore
-      }
-    }
-
-    // ============================================================
-    // USGS gauges (best-effort)
-    // ============================================================
-    async function loadUSGSGauges() {
-      // Parse RDB (tab-delimited text) and plot points. If CORS blocks, it will just not load.
-      try {
-        const res = await fetch(USGS_SITES);
-        if (!res.ok) throw new Error("USGS sites request failed");
-        const text = await res.text();
-
-        const lines = text.split("\n").filter(l => l && !l.startsWith("#"));
-        // Find header line containing "site_no"
-        const headerIdx = lines.findIndex(l => l.startsWith("agency_cd"));
-        if (headerIdx < 0) return;
-
-        const headers = lines[headerIdx].split("\t");
-        const dataLines = lines.slice(headerIdx + 2); // skip type line
-
-        const idx = (name) => headers.indexOf(name);
-
-        const iSite = idx("site_no");
-        const iName = idx("station_nm");
-        const iLat = idx("dec_lat_va");
-        const iLon = idx("dec_long_va");
-
-        if (iSite < 0 || iLat < 0 || iLon < 0) return;
-
-        usgsPins.clearLayers();
-
-        for (const dl of dataLines) {
-          const parts = dl.split("\t");
-          const site = parts[iSite];
-          const nm = parts[iName] || site;
-          const lat = parseFloat(parts[iLat]);
-          const lon = parseFloat(parts[iLon]);
-          if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-
-          const m = L.circleMarker([lat, lon], { radius: 4, weight: 1, fillOpacity: 0.75 });
-          m.bindPopup(`
-            <strong>${escapeHtml(nm)}</strong><br/>
-            USGS Site: ${escapeHtml(site)}<br/>
-            <a href="https://waterdata.usgs.gov/monitoring-location/${encodeURIComponent(site)}/" target="_blank" rel="noopener">
-              Open USGS site page
-            </a>
-          `);
-          m.addTo(usgsPins);
-        }
-      } catch (e) {
-        console.warn("USGS gauges failed:", e);
-      }
-    }
-
-    // ============================================================
-    // Alerts refresh
-    // ============================================================
-    async function refreshAlerts() {
-      const url = "https://api.weather.gov/alerts/active?area=LA";
-      try {
-        const res = await fetch(url, { headers: { "Accept": "application/geo+json" } });
-        if (!res.ok) throw new Error(`alerts failed (${res.status})`);
-        const data = await res.json();
-        alertsLayer.clearLayers();
-        if (data.features?.length) alertsLayer.addData(data);
-      } catch (e) {
-        console.warn("Alerts refresh failed:", e);
-      }
-    }
-
-    // ============================================================
-    // Refresh radar & rainfall overlays (cache bust)
-    // ============================================================
-    function refreshOverlays() {
-      radarCacheBuster = Date.now();
-      qpeCacheBuster = Date.now();
-
-      // force redraw
-      const op = radar.options.opacity;
-      radar.setOpacity(op - 0.0001); radar.setOpacity(op);
-      const op2 = qpe24.options.opacity;
-      qpe24.setOpacity(op2 - 0.0001); qpe24.setOpacity(op2);
-    }
-
-    // ============================================================
-    // Geometry + misc helpers
-    // ============================================================
-    function polygonCentroidSafe(geom) {
-      if (!geom) return null;
-
-      let points = [];
-      if (geom.type === "Polygon") {
-        const ring = geom.coordinates?.[0];
-        if (!ring || ring.length < 3) return null;
-        points = ring;
-      } else if (geom.type === "MultiPolygon") {
-        const polys = geom.coordinates || [];
-        let bestRing = null;
-        for (const poly of polys) {
-          const ring = poly?.[0];
-          if (!ring) continue;
-          if (!bestRing || ring.length > bestRing.length) bestRing = ring;
-        }
-        if (!bestRing) return null;
-        points = bestRing;
-      } else {
-        return null;
-      }
-
-      let sumLon = 0, sumLat = 0, n = 0;
-      for (const p of points) {
-        if (!Array.isArray(p) || p.length < 2) continue;
-        sumLon += p[0];
-        sumLat += p[1];
-        n++;
-      }
-      if (!n) return null;
-      return [sumLon / n, sumLat / n];
-    }
-
     function pickNameField(props) {
       return (
         props.PARISH ||
@@ -699,25 +550,43 @@
     }
 
     // ============================================================
+    // Layer control
+    // ============================================================
+    const baseMaps = { "OpenStreetMap": osm, "Satellite (Esri)": esri };
+    const overlays = {
+      "Radar (Reflectivity)": radar,
+      "NWS Alerts": alertsLayer,
+      "LA State Boundary": stateBoundary,
+      "LA Parishes (zoom in)": parishes,
+      "Statewide NWS Stations (clustered)": nwsStationsCluster
+    };
+    L.control.layers(baseMaps, overlays, { collapsed: false }).addTo(map);
+
+    // defaults on
+    radar.addTo(map);
+    alertsLayer.addTo(map);
+    stateBoundary.addTo(map);
+    nwsStationsCluster.addTo(map);
+
+    // ============================================================
     // Init
     // ============================================================
-    (function init() {
-      // Clean legend (no weird internal markers)
-      // Start with something useful immediately
+    (function init(){
       map.setView([DEFAULT.lat, DEFAULT.lon], DEFAULT.zoom);
+
+      // Show something immediately
       loadPointWeather(DEFAULT.lat, DEFAULT.lon, DEFAULT.name);
 
-      // Load boundaries/pins, alerts, and extras
-      loadBoundariesAndParishPins();
+      // Load everything else
+      loadBoundaries();
       refreshAlerts();
-
-      buildMetarPins();
-      loadUSGSGauges(); // best-effort
+      loadStatewideNWSStations().catch(e => {
+        console.warn("Statewide stations failed:", e);
+        setStatus("Could not load statewide stations (temporary NWS issue). Try refreshing.", "err", false);
+      });
 
       setInterval(refreshAlerts, ALERT_REFRESH_MS);
-      setInterval(refreshOverlays, RADAR_REFRESH_MS);
-
-      setStatus("Ready. Click a pin or the map.", "ok", false);
+      setInterval(refreshRadar, RADAR_REFRESH_MS);
     })();
   </script>
 </body>
