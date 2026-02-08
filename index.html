@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Louisiana Live Weather Map</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    .panel {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      width: 340px; max-height: 75vh; overflow: auto;
+      background: white; padding: 10px 12px; border-radius: 10px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.15);
+      font: 14px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    .panel h2 { margin: 0 0 6px; font-size: 16px; }
+    .muted { color: #555; }
+    .small { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel" id="panel">
+    <h2>Louisiana Live Weather</h2>
+    <div class="muted">Click anywhere in Louisiana to load current conditions.</div>
+    <hr />
+    <div><strong>Radar:</strong> NWS MRMS Base Reflectivity</div>
+    <div class="small muted">Tip: Use the “Radar (Reflectivity)” toggle on the map.</div>
+    <div id="status" class="muted" style="margin-top:8px;"></div>
+    <div id="content" style="margin-top:8px;"></div>
+  </div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script>
+    // 1) Create the map (centered on Louisiana)
+    const map = L.map('map', { zoomControl: true }).setView([30.95, -91.9], 7);
+
+    // 2) Add a base map (OpenStreetMap)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // 3) Add radar overlay (WMS)
+    // WMS endpoint for NWS MRMS base reflectivity:
+    const radarWmsUrl =
+      'https://mapservices.weather.noaa.gov/eventdriven/services/radar/radar_base_reflectivity/MapServer/WMSServer';
+
+    // ArcGIS WMS often uses numeric layer IDs. Here we use layer "1".
+    const radar = L.tileLayer.wms(radarWmsUrl, {
+      layers: '1',
+      format: 'image/png',
+      transparent: true,
+      opacity: 0.55,
+      uppercase: true
+    }).addTo(map);
+
+    // 4) Add a layer toggle control
+    L.control.layers(null, { 'Radar (Reflectivity)': radar }, { collapsed: false }).addTo(map);
+
+    // 5) Click-to-current conditions (NWS API)
+    const statusEl = document.getElementById('status');
+    const contentEl = document.getElementById('content');
+
+    async function loadConditions(lat, lon) {
+      statusEl.textContent = 'Loading current conditions…';
+      contentEl.innerHTML = '';
+
+      const pointsUrl = `https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`;
+
+      try {
+        // A) Find which NWS office covers this point + where nearby stations are
+        const pRes = await fetch(pointsUrl, { headers: { 'Accept': 'application/geo+json' } });
+        if (!pRes.ok) throw new Error(`points request failed: ${pRes.status}`);
+        const pJson = await pRes.json();
+
+        const stationsUrl = pJson.properties.observationStations;
+
+        // B) Get nearby stations, pick the first (usually nearest)
+        const sRes = await fetch(stationsUrl, { headers: { 'Accept': 'application/geo+json' } });
+        if (!sRes.ok) throw new Error(`stations request failed: ${sRes.status}`);
+        const sJson = await sRes.json();
+
+        const first = sJson.features?.[0];
+        const stationId = first?.properties?.stationIdentifier;
+        const stationName = first?.properties?.name;
+
+        if (!stationId) {
+          statusEl.textContent = '';
+          contentEl.innerHTML = `<div class="muted">No nearby station found for this point.</div>`;
+          return;
+        }
+
+        // C) Get latest observation at that station
+        const obsUrl = `https://api.weather.gov/stations/${stationId}/observations/latest`;
+        const oRes = await fetch(obsUrl, { headers: { 'Accept': 'application/geo+json' } });
+        if (!oRes.ok) throw new Error(`observation request failed: ${oRes.status}`);
+        const oJson = await oRes.json();
+        const o = oJson.properties;
+
+        // Convert °C to °F
+        const cToF = c => (c * 9/5) + 32;
+
+        const tempC = o.temperature?.value;
+        const tempF = (tempC != null) ? cToF(tempC) : null;
+
+        statusEl.textContent = '';
+        contentEl.innerHTML = `
+          <div><strong>Nearest station:</strong> ${stationName || stationId} (${stationId})</div>
+          <div><strong>Observed:</strong> ${o.timestamp || '—'}</div>
+          <div><strong>Temp:</strong> ${tempF != null ? tempF.toFixed(1) + ' °F' : '—'}</div>
+          <div><strong>Humidity:</strong> ${o.relativeHumidity?.value != null ? o.relativeHumidity.value.toFixed(0) + '%' : '—'}</div>
+          <div><strong>Wind:</strong>
+            ${o.windSpeed?.value != null ? o.windSpeed.value.toFixed(1) + ' m/s' : '—'}
+            @ ${o.windDirection?.value != null ? o.windDirection.value.toFixed(0) + '°' : '—'}
+          </div>
+          <div class="small muted" style="margin-top:6px;">
+            Tip: Click other locations to compare conditions.
+          </div>
+        `;
+
+      } catch (err) {
+        statusEl.textContent = 'Could not load data for this point.';
+        contentEl.innerHTML = `<div class="muted">${String(err)}</div>`;
+      }
+    }
+
+    map.on('click', e => loadConditions(e.latlng.lat, e.latlng.lng));
+  </script>
+</body>
+</html>
