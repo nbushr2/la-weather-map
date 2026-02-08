@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Louisiana Live Weather Map</title>
+  <title>Louisiana Current Weather (NWS)</title>
 
   <link rel="stylesheet"
         href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -14,7 +14,7 @@
     html, body, #map { height: 100%; margin: 0; }
     .panel {
       position: absolute; top: 10px; right: 10px; z-index: 1000;
-      width: 420px; max-height: 86vh; overflow: auto;
+      width: 440px; max-height: 88vh; overflow: auto;
       background: #fff; padding: 12px 14px; border-radius: 12px;
       box-shadow: 0 10px 28px rgba(0,0,0,.18);
       font: 14px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
@@ -28,24 +28,32 @@
       border-radius: 10px; cursor:pointer;
     }
     button:hover { background:#eee; }
-    .pill {
-      display:inline-block; padding: 2px 8px; border-radius: 999px;
-      background:#f3f3f3; border:1px solid #e7e7e7; margin: 0 6px 6px 0;
-    }
     .hr { border-top:1px solid #eee; margin:10px 0; }
     .kpi { display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:8px; }
     .kpi > div { border:1px solid #eee; border-radius:10px; padding:8px; }
     .kpi strong { display:block; font-size:12px; color:#555; margin-bottom:4px; }
-    .err { color:#b00020; }
     .ok { color:#0b6b0b; }
+    .err { color:#b00020; }
     .spinner {
       display:inline-block; width:12px; height:12px; border:2px solid #bbb;
       border-top-color:#444; border-radius:50%; animation: spin 1s linear infinite;
       vertical-align: -2px; margin-right: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .cta {
+      display:block;
+      text-align:center;
+      padding:10px 12px;
+      border-radius: 12px;
+      border: 1px solid #1a73e8;
+      background: #e8f0fe;
+      color: #1a73e8;
+      text-decoration:none;
+      font-weight: 600;
+      margin-top: 10px;
+    }
+    .cta:hover { background:#dbe8ff; }
 
-    /* Small legend box (optional) */
     .legend {
       position: absolute; bottom: 18px; left: 10px; z-index: 900;
       background: rgba(255,255,255,.92);
@@ -53,7 +61,7 @@
       border: 1px solid #e6e6e6;
       box-shadow: 0 6px 16px rgba(0,0,0,.12);
       font: 12px/1.25 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      max-width: 320px;
+      max-width: 360px;
     }
     .legend strong { display:block; margin-bottom:4px; }
   </style>
@@ -62,20 +70,11 @@
 <body>
   <div id="map"></div>
 
-  <div class="panel" id="panel">
-    <h2>Louisiana Live Weather</h2>
+  <div class="panel">
+    <h2>Louisiana Current Weather</h2>
     <div class="muted small">
-      Click the map or a city marker to load <strong>nearest station observations</strong> + <strong>hourly forecast</strong>.<br/>
-      Turn layers on/off (Radar, Alerts, Boundaries) from the layer control.
-    </div>
-
-    <div class="row">
-      <button onclick="gotoCity('Baton Rouge')">Baton Rouge</button>
-      <button onclick="gotoCity('New Orleans')">New Orleans</button>
-      <button onclick="gotoCity('Shreveport')">Shreveport</button>
-      <button onclick="gotoCity('Lafayette')">Lafayette</button>
-      <button onclick="gotoCity('Lake Charles')">Lake Charles</button>
-      <button onclick="gotoCity('Monroe')">Monroe</button>
+      Click a <strong>parish pin</strong> (or click the map) to view current observations + hourly forecast.<br/>
+      You’ll also get a link to the official NWS MapClick page for that forecast zone.
     </div>
 
     <div class="hr"></div>
@@ -85,14 +84,16 @@
 
     <div class="hr"></div>
     <div class="small muted">
-      Sources: NWS API (observations/forecast/alerts) + NWS MRMS radar WMS. Boundaries from your GeoJSON.
+      Sources: NWS API (observations/forecast/alerts) + MRMS radar WMS.
+      MapClick is the official weather.gov interface. :contentReference[oaicite:3]{index=3}
     </div>
   </div>
 
-  <div class="legend" id="legend">
-    <strong>How “Current Conditions” work</strong>
-    Observations come from the <em>nearest reporting station</em> (often an airport/ASOS).
-    Forecast is gridded for the clicked point. Some rural areas may be far from stations.
+  <div class="legend">
+    <strong>What you’re seeing</strong>
+    • Radar = MRMS base reflectivity<br/>
+    • Alerts = active NWS alerts for Louisiana<br/>
+    • “Current conditions” = nearest reporting station (often ASOS/airport), forecast = NWS grid for that point. :contentReference[oaicite:4]{index=4}
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -101,23 +102,12 @@
 
   <script>
     // -----------------------------
-    // Settings
+    // Core settings
     // -----------------------------
-    const DEFAULT_CITY = "Baton Rouge";
-    const ALERT_REFRESH_MS = 2 * 60 * 1000;   // 2 minutes
-    const RADAR_REFRESH_MS = 5 * 60 * 1000;   // 5 minutes
-    const PARISH_SHOW_ZOOM = 9;               // show parish lines automatically at/above this zoom
-    const STATION_CANDIDATES = 12;            // consider N closest stations (more reliable)
-
-    // City points (clickable)
-    const cities = {
-      "Baton Rouge": { lat: 30.4515, lon: -91.1871, zoom: 10 },
-      "New Orleans": { lat: 29.9511, lon: -90.0715, zoom: 10 },
-      "Shreveport":  { lat: 32.5252, lon: -93.7502, zoom: 10 },
-      "Lafayette":   { lat: 30.2241, lon: -92.0198, zoom: 11 },
-      "Lake Charles":{ lat: 30.2266, lon: -93.2174, zoom: 11 },
-      "Monroe":      { lat: 32.5093, lon: -92.1193, zoom: 11 }
-    };
+    const DEFAULT_POINT = { name: "Baton Rouge", lat: 30.4515, lon: -91.1871, zoom: 8 };
+    const ALERT_REFRESH_MS = 2 * 60 * 1000; // 2 min
+    const RADAR_REFRESH_MS = 5 * 60 * 1000; // 5 min
+    const PARISH_PIN_MAX = 100; // safety
 
     // -----------------------------
     // Map setup
@@ -134,21 +124,20 @@
       { maxZoom: 18, attribution: 'Tiles &copy; Esri' }
     );
 
-    // Radar WMS overlay (MRMS base reflectivity)
-    // This is a NOAA/NWS-hosted service.
+    // Radar overlay (NWS MRMS WMS)
     const radarWmsUrl =
       'https://mapservices.weather.noaa.gov/eventdriven/services/radar/radar_base_reflectivity/MapServer/WMSServer';
 
     let radarCacheBuster = Date.now();
     const radar = L.tileLayer.wms(radarWmsUrl, {
-      layers: '1',                 // ArcGIS WMS numeric layer id
+      layers: '1',
       format: 'image/png',
       transparent: true,
       opacity: 0.55,
       uppercase: true
     });
 
-    // Cache-buster to force refresh on schedule
+    // Cache-bust radar tiles
     const _getTileUrl = radar.getTileUrl.bind(radar);
     radar.getTileUrl = function(coords) {
       const url = _getTileUrl(coords);
@@ -171,7 +160,6 @@
         const title = p.event || 'Alert';
         const headline = p.headline || '';
         const ends = p.ends || '';
-        const instruction = p.instruction || '';
         const area = p.areaDesc || '';
         layer.bindPopup(`
           <div style="font:14px/1.35 system-ui;">
@@ -179,66 +167,43 @@
             <div class="muted">${escapeHtml(area)}</div>
             <div style="margin-top:6px;">${escapeHtml(headline)}</div>
             ${ends ? `<div class="muted small" style="margin-top:6px;">Ends: ${escapeHtml(ends)}</div>` : ''}
-            ${instruction ? `<div style="margin-top:8px;"><strong>Instructions:</strong><br/>${escapeHtml(instruction)}</div>` : ''}
           </div>
         `);
       }
     });
 
-    // State + Parish boundaries (your files)
-    const stateBoundaryLayer = L.geoJSON(null, {
-      style: { weight: 3, fillOpacity: 0 }
-    });
-
-    const parishLayer = L.geoJSON(null, {
+    // State boundary + parishes (your GeoJSON)
+    const stateBoundaryLayer = L.geoJSON(null, { style: { weight: 3, fillOpacity: 0 } });
+    const parishBoundaryLayer = L.geoJSON(null, {
       style: { weight: 1, fillOpacity: 0 },
       onEachFeature: (feature, layer) => {
-        const p = feature.properties || {};
-        const name = pickNameField(p);
+        const name = pickNameField(feature.properties || {});
         layer.bindTooltip(name, { sticky: true });
       }
     });
 
-    // City markers layer (clickable points)
-    const cityLayer = L.layerGroup();
-
-    for (const [name, c] of Object.entries(cities)) {
-      const m = L.circleMarker([c.lat, c.lon], {
-        radius: 6, weight: 2, fillOpacity: 0.8
-      });
-      m.bindPopup(`<strong>${escapeHtml(name)}</strong><br/><span class="muted">Click to load weather</span>`);
-      m.on('click', () => gotoCity(name));
-      m.addTo(cityLayer);
-    }
-    cityLayer.addTo(map);
+    // Parish pins
+    const parishPins = L.layerGroup();
 
     // Layer controls
     const baseMaps = { "OpenStreetMap": osm, "Satellite (Esri)": esriImagery };
     const overlays = {
-      "City Quick-Nav Points": cityLayer,
       "Radar (Reflectivity)": radar,
       "NWS Alerts": alertsLayer,
       "LA State Boundary": stateBoundaryLayer,
-      "LA Parishes": parishLayer
+      "LA Parishes": parishBoundaryLayer,
+      "Parish Pins (click for weather)": parishPins
     };
     L.control.layers(baseMaps, overlays, { collapsed: false }).addTo(map);
 
-    // Add “wow” layers by default
+    // Defaults
     radar.addTo(map);
+    alertsLayer.addTo(map);
     stateBoundaryLayer.addTo(map);
-
-    // Parish lines: add only when zoomed in (avoids clutter)
-    map.on('zoomend', () => {
-      const z = map.getZoom();
-      if (z >= PARISH_SHOW_ZOOM) {
-        if (!map.hasLayer(parishLayer)) parishLayer.addTo(map);
-      } else {
-        if (map.hasLayer(parishLayer)) map.removeLayer(parishLayer);
-      }
-    });
+    parishPins.addTo(map);
 
     // -----------------------------
-    // UI helpers
+    // UI
     // -----------------------------
     const statusEl = document.getElementById('status');
     const contentEl = document.getElementById('content');
@@ -254,7 +219,6 @@
       return String(val);
     }
 
-    // Unit conversions (NWS obs often metric)
     const cToF = c => (c * 9/5) + 32;
     const mpsToMph = mps => mps * 2.2369362920544;
     const paToInHg = pa => pa * 0.00029529983071445;
@@ -264,150 +228,87 @@
     let clickMarker = null;
 
     // -----------------------------
-    // Data: smarter station picking
-    // -----------------------------
-    function haversineKm(lat1, lon1, lat2, lon2) {
-      const R = 6371;
-      const toRad = d => d * Math.PI / 180;
-      const dLat = toRad(lat2 - lat1);
-      const dLon = toRad(lon2 - lon1);
-      const a =
-        Math.sin(dLat/2)**2 +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
-      return 2 * R * Math.asin(Math.sqrt(a));
-    }
-
-    async function chooseBestStation(lat, lon, stationsGeoJson) {
-      const feats = stationsGeoJson.features || [];
-      const scored = feats.map(f => {
-        const coords = f.geometry?.coordinates; // [lon, lat]
-        const sLat = coords?.[1];
-        const sLon = coords?.[0];
-        const dist = (sLat != null && sLon != null) ? haversineKm(lat, lon, sLat, sLon) : 99999;
-        return { f, dist };
-      }).sort((a,b) => a.dist - b.dist);
-
-      // Consider several nearest stations; pick the first one that returns a valid observation
-      const candidates = scored.slice(0, STATION_CANDIDATES);
-
-      for (const c of candidates) {
-        const id = c.f.properties?.stationIdentifier;
-        if (!id) continue;
-        const obs = await fetchLatestObservation(id);
-        if (obs) return { stationId: id, stationName: c.f.properties?.name || id, distanceKm: c.dist, obs };
-      }
-
-      // If none worked, fallback to the closest station id anyway
-      const fallback = candidates[0]?.f;
-      const fid = fallback?.properties?.stationIdentifier;
-      if (fid) {
-        const obs = await fetchLatestObservation(fid); // might be null
-        return { stationId: fid, stationName: fallback?.properties?.name || fid, distanceKm: candidates[0].dist, obs };
-      }
-      return { stationId: null, stationName: null, distanceKm: null, obs: null };
-    }
-
-    async function fetchLatestObservation(stationId) {
-      try {
-        const obsUrl = `https://api.weather.gov/stations/${stationId}/observations/latest`;
-        const res = await fetch(obsUrl, { headers: { 'Accept': 'application/geo+json' } });
-        if (!res.ok) return null;
-        const json = await res.json();
-        return json.properties || null;
-      } catch {
-        return null;
-      }
-    }
-
-    // -----------------------------
-    // Main: weather loader
+    // Click-to-weather + MapClick link
     // -----------------------------
     async function loadPointWeather(lat, lon, label="Selected point") {
       setStatus(`Loading weather for ${label}…`, "muted", true);
       contentEl.innerHTML = '';
 
-      // Marker
       if (clickMarker) clickMarker.remove();
       clickMarker = L.marker([lat, lon]).addTo(map);
 
       const pointsUrl = `https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`;
 
       try {
-        // 1) Find forecast + stations for point
         const pRes = await fetch(pointsUrl, { headers: { 'Accept': 'application/geo+json' } });
         if (!pRes.ok) throw new Error(`NWS points failed (${pRes.status})`);
         const pJson = await pRes.json();
         const props = pJson.properties;
 
-        const stationsUrl = props.observationStations;
-        const hourlyUrl = props.forecastHourly;
-        const gridId = props.gridId;
-        const gridX = props.gridX;
-        const gridY = props.gridY;
+        // Zone id for MapClick link (e.g., .../zones/forecast/LAZ069)
+        const forecastZoneUrl = props.forecastZone;
+        const zoneId = forecastZoneUrl ? String(forecastZoneUrl).split('/').pop() : null;
+        const mapClickUrl = zoneId
+          ? `https://forecast.weather.gov/MapClick.php?zoneid=${encodeURIComponent(zoneId)}`
+          : `https://forecast.weather.gov/MapClick.php?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`;
 
-        // 2) Stations list
+        // Station obs (nearest)
+        const stationsUrl = props.observationStations;
         const sRes = await fetch(stationsUrl, { headers: { 'Accept': 'application/geo+json' } });
         if (!sRes.ok) throw new Error(`Stations list failed (${sRes.status})`);
         const sJson = await sRes.json();
 
-        // 3) Choose best station (not just the first)
-        const best = await chooseBestStation(lat, lon, sJson);
+        const first = sJson.features?.[0];
+        const stationId = first?.properties?.stationIdentifier;
+        const stationName = first?.properties?.name || stationId;
 
-        // 4) Hourly forecast (next 18)
+        let obs = null;
+        if (stationId) {
+          const obsUrl = `https://api.weather.gov/stations/${stationId}/observations/latest`;
+          const oRes = await fetch(obsUrl, { headers: { 'Accept': 'application/geo+json' } });
+          if (oRes.ok) {
+            const oJson = await oRes.json();
+            obs = oJson.properties || null;
+          }
+        }
+
+        // Hourly forecast
         let hours = [];
+        const hourlyUrl = props.forecastHourly;
         if (hourlyUrl) {
           const hRes = await fetch(hourlyUrl, { headers: { 'Accept': 'application/geo+json' } });
           if (hRes.ok) {
             const hJson = await hRes.json();
-            hours = (hJson.properties?.periods || []).slice(0, 18);
+            hours = (hJson.properties?.periods || []).slice(0, 12);
           }
         }
 
-        // Render
         setStatus(`Loaded: ${label}`, "ok", false);
 
-        const obs = best.obs;
-
-        // Pull & convert useful variables
+        // Compute useful metrics
         const tempF = (obs?.temperature?.value != null) ? cToF(obs.temperature.value) : null;
         const dewF  = (obs?.dewpoint?.value != null) ? cToF(obs.dewpoint.value) : null;
         const rh    = obs?.relativeHumidity?.value;
         const windMph = (obs?.windSpeed?.value != null) ? mpsToMph(obs.windSpeed.value) : null;
-        const windDir = obs?.windDirection?.value;
         const gustMph = (obs?.windGust?.value != null) ? mpsToMph(obs.windGust.value) : null;
-
+        const windDir = obs?.windDirection?.value;
         const visMi = (obs?.visibility?.value != null) ? mToMiles(obs.visibility.value) : null;
         const pressureInHg = (obs?.barometricPressure?.value != null) ? paToInHg(obs.barometricPressure.value) : null;
-
-        const precipMm = obs?.precipitationLastHour?.value; // mm
-        const precipIn = (precipMm != null) ? (precipMm / 25.4) : null;
-
         const wx = obs?.textDescription || '—';
 
-        const stationLine = best.stationId
-          ? `<div><strong>Nearest reporting station:</strong> ${escapeHtml(best.stationName)} (${escapeHtml(best.stationId)})</div>
-             <div class="small muted">Approx distance: ${best.distanceKm != null ? fmt(best.distanceKm,1) + " km" : "—"}</div>`
-          : `<div class="muted">No station found for this point.</div>`;
-
-        const obsLine = obs?.timestamp
-          ? `<div class="small muted">Observed: ${escapeHtml(obs.timestamp)}</div>`
-          : `<div class="small muted">Observed: — (station may not be reporting right now)</div>`;
-
-        const forecastLine = (gridId && gridX != null && gridY != null)
-          ? `<div class="small muted">Forecast grid: ${escapeHtml(gridId)} (${gridX}, ${gridY})</div>`
-          : '';
-
-        const html = `
-          <div>
-            <span class="pill">${escapeHtml(label)}</span>
-            <span class="pill">Lat ${lat.toFixed(3)}, Lon ${lon.toFixed(3)}</span>
+        contentEl.innerHTML = `
+          <div class="small muted">
+            <strong>${escapeHtml(label)}</strong> — Lat ${lat.toFixed(3)}, Lon ${lon.toFixed(3)}
           </div>
+
+          <a class="cta" href="${mapClickUrl}" target="_blank" rel="noopener">
+            Open official NWS Forecast (MapClick) ${zoneId ? `— ${escapeHtml(zoneId)}` : ''}
+          </a>
 
           <div class="hr"></div>
 
-          ${stationLine}
-          ${obsLine}
-          ${forecastLine}
+          <div><strong>Nearest station:</strong> ${escapeHtml(stationName || '—')} ${stationId ? `(${escapeHtml(stationId)})` : ''}</div>
+          <div class="small muted">Observed: ${escapeHtml(obs?.timestamp || '—')}</div>
 
           <div class="kpi">
             <div><strong>Temperature</strong>${tempF != null ? fmt(tempF,1) + " °F" : "—"}</div>
@@ -418,13 +319,11 @@
             <div><strong>Gust</strong>${gustMph != null ? fmt(gustMph,1) + " mph" : "—"}</div>
             <div><strong>Visibility</strong>${visMi != null ? fmt(visMi,1) + " mi" : "—"}</div>
             <div><strong>Pressure</strong>${pressureInHg != null ? fmt(pressureInHg,2) + " inHg" : "—"}</div>
-            <div><strong>Precip (1h)</strong>${precipIn != null ? fmt(precipIn,2) + " in" : "—"}</div>
-            <div><strong>Heat index</strong>${obs?.heatIndex?.value != null ? fmt(cToF(obs.heatIndex.value),1) + " °F" : "—"}</div>
           </div>
 
           <div class="hr"></div>
 
-          <div><strong>Next 18 hours (forecast for this point)</strong></div>
+          <div><strong>Next 12 hours (forecast for this point)</strong></div>
           ${hours.length ? `
             <ul style="padding-left:18px; margin:8px 0;">
               ${hours.map(h => `
@@ -436,43 +335,23 @@
               `).join('')}
             </ul>
           ` : `<div class="muted">Hourly forecast not available right now.</div>`}
-
-          <div class="hr"></div>
-
-          <div class="small muted">
-            Tip: Turn on <strong>NWS Alerts</strong> and click polygons. Zoom in to see parish boundaries automatically.
-          </div>
         `;
-
-        contentEl.innerHTML = html;
-
       } catch (err) {
-        setStatus(`Error loading weather`, "err", false);
+        setStatus(`Error loading data`, "err", false);
         contentEl.innerHTML = `
-          <div class="err"><strong>Weather data failed to load.</strong></div>
-          <div class="muted small" style="margin-top:6px;">Details: ${escapeHtml(String(err))}</div>
-          <div class="muted small" style="margin-top:10px;">
-            If this happens everywhere, NWS may be temporarily limiting requests or a service is down.
-          </div>
+          <div class="err"><strong>Weather data failed.</strong></div>
+          <div class="small muted" style="margin-top:6px;">${escapeHtml(String(err))}</div>
         `;
       }
     }
 
-    // Map click
     map.on('click', e => loadPointWeather(e.latlng.lat, e.latlng.lng, "Map click"));
 
-    // City navigation
-    window.gotoCity = function(name) {
-      const c = cities[name];
-      if (!c) return;
-      map.setView([c.lat, c.lon], c.zoom);
-      loadPointWeather(c.lat, c.lon, name);
-    };
-
     // -----------------------------
-    // Alerts (active in LA)
+    // Alerts refresh
     // -----------------------------
     async function refreshAlerts() {
+      // NWS Alerts API supports filtering by state area=LA
       const url = "https://api.weather.gov/alerts/active?area=LA";
       try {
         const res = await fetch(url, { headers: { 'Accept': 'application/geo+json' } });
@@ -486,7 +365,7 @@
     }
 
     // -----------------------------
-    // Radar refresh (force new tiles)
+    // Radar refresh
     // -----------------------------
     function refreshRadar() {
       radarCacheBuster = Date.now();
@@ -496,36 +375,96 @@
     }
 
     // -----------------------------
-    // Boundaries loader (your repo files)
+    // Boundaries + parish pins
     // -----------------------------
-    async function loadBoundaries() {
+    async function loadBoundariesAndPins() {
       try {
         const [stateRes, parishRes] = await Promise.all([
           fetch('./louisiana_state_boundary.geojson'),
           fetch('./louisiana_parishes.geojson')
         ]);
-        if (!stateRes.ok) throw new Error("State boundary file not found (check filename/path).");
-        if (!parishRes.ok) throw new Error("Parish file not found (check filename/path).");
+        if (!stateRes.ok) throw new Error("State boundary file missing or wrong filename.");
+        if (!parishRes.ok) throw new Error("Parish file missing or wrong filename.");
 
         const stateJson = await stateRes.json();
         const parishJson = await parishRes.json();
 
         stateBoundaryLayer.addData(stateJson);
-        parishLayer.addData(parishJson);
+        parishBoundaryLayer.addData(parishJson);
 
-        // If zoom already high, show parishes
-        if (map.getZoom() >= PARISH_SHOW_ZOOM) parishLayer.addTo(map);
+        // Build parish centroid pins
+        const feats = parishJson.features || [];
+        let count = 0;
+        for (const f of feats) {
+          if (count >= PARISH_PIN_MAX) break;
 
+          const name = pickNameField(f.properties || {});
+          const centroid = polygonCentroidSafe(f.geometry);
+          if (!centroid) continue;
+
+          const [clon, clat] = centroid;
+          const marker = L.circleMarker([clat, clon], {
+            radius: 6, weight: 2, fillOpacity: 0.85
+          });
+
+          marker.bindTooltip(name, { sticky: true });
+          marker.on('click', () => {
+            map.setView([clat, clon], Math.max(map.getZoom(), 9));
+            loadPointWeather(clat, clon, name);
+          });
+
+          marker.addTo(parishPins);
+          count++;
+        }
       } catch (e) {
-        console.warn("Boundary load failed:", e);
+        console.warn("Boundary/pin load failed:", e);
+        setStatus("Loaded map, but parish boundaries/pins did not load (check filenames).", "err", false);
       }
     }
 
     // -----------------------------
-    // Small helpers
+    // Geometry helpers (centroids)
     // -----------------------------
+    // Returns [lon, lat] centroid for Polygon/MultiPolygon
+    // Uses a simple average of ring coordinates if true centroid calc is complex.
+    function polygonCentroidSafe(geom) {
+      if (!geom) return null;
+
+      // Polygon: coordinates = [ [ [lon,lat], ... ] , holes...]
+      // MultiPolygon: coordinates = [ [ [ [lon,lat], ... ] ], ...]
+      let points = [];
+
+      if (geom.type === "Polygon") {
+        const ring = geom.coordinates?.[0];
+        if (!ring || ring.length < 3) return null;
+        points = ring;
+      } else if (geom.type === "MultiPolygon") {
+        // take largest polygon by ring length
+        const polys = geom.coordinates || [];
+        let bestRing = null;
+        for (const poly of polys) {
+          const ring = poly?.[0];
+          if (!ring) continue;
+          if (!bestRing || ring.length > bestRing.length) bestRing = ring;
+        }
+        if (!bestRing) return null;
+        points = bestRing;
+      } else {
+        return null;
+      }
+
+      let sumLon = 0, sumLat = 0, n = 0;
+      for (const p of points) {
+        if (!Array.isArray(p) || p.length < 2) continue;
+        sumLon += p[0];
+        sumLat += p[1];
+        n++;
+      }
+      if (!n) return null;
+      return [sumLon / n, sumLat / n];
+    }
+
     function pickNameField(props) {
-      // Try common fields; your file may use one of these.
       return (
         props.PARISH ||
         props.parish ||
@@ -549,10 +488,10 @@
     // Init
     // -----------------------------
     (function init() {
-      // Start with a real data view immediately
-      gotoCity(DEFAULT_CITY);
+      map.setView([DEFAULT_POINT.lat, DEFAULT_POINT.lon], DEFAULT_POINT.zoom);
+      loadPointWeather(DEFAULT_POINT.lat, DEFAULT_POINT.lon, DEFAULT_POINT.name);
 
-      loadBoundaries();
+      loadBoundariesAndPins();
       refreshAlerts();
 
       setInterval(refreshAlerts, ALERT_REFRESH_MS);
