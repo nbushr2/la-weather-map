@@ -5,140 +5,380 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Louisiana Live Weather Map</title>
 
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-    crossorigin=""
-  />
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin="" />
+
   <style>
     html, body, #map { height: 100%; margin: 0; }
     .panel {
       position: absolute; top: 10px; right: 10px; z-index: 1000;
-      width: 340px; max-height: 75vh; overflow: auto;
-      background: white; padding: 10px 12px; border-radius: 10px;
-      box-shadow: 0 6px 18px rgba(0,0,0,.15);
+      width: 380px; max-height: 85vh; overflow: auto;
+      background: #fff; padding: 12px 14px; border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.18);
       font: 14px/1.35 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     }
     .panel h2 { margin: 0 0 6px; font-size: 16px; }
     .muted { color: #555; }
     .small { font-size: 12px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; margin: 8px 0; }
+    button {
+      border: 1px solid #ddd; background:#f7f7f7; padding:6px 10px;
+      border-radius: 10px; cursor:pointer;
+    }
+    button:hover { background:#eee; }
+    .pill {
+      display:inline-block; padding: 2px 8px; border-radius: 999px;
+      background:#f2f2f2; border:1px solid #e6e6e6; margin-right:6px;
+    }
+    .hr { border-top:1px solid #eee; margin:10px 0; }
+    .kpi { display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:8px; }
+    .kpi > div { border:1px solid #eee; border-radius:10px; padding:8px; }
+    .kpi strong { display:block; font-size:12px; color:#555; margin-bottom:4px; }
+    .err { color:#b00020; }
+    .ok { color:#0b6b0b; }
   </style>
 </head>
+
 <body>
   <div id="map"></div>
 
   <div class="panel" id="panel">
     <h2>Louisiana Live Weather</h2>
-    <div class="muted">Click anywhere in Louisiana to load current conditions.</div>
-    <hr />
-    <div><strong>Radar:</strong> NWS MRMS Base Reflectivity</div>
-    <div class="small muted">Tip: Use the “Radar (Reflectivity)” toggle on the map.</div>
-    <div id="status" class="muted" style="margin-top:8px;"></div>
-    <div id="content" style="margin-top:8px;"></div>
+    <div class="muted small">
+      Click anywhere to load nearest station observations + hourly forecast.<br/>
+      Radar + Alerts overlays are toggleable on the map.
+    </div>
+
+    <div class="row">
+      <button onclick="gotoCity('Baton Rouge')">Baton Rouge</button>
+      <button onclick="gotoCity('New Orleans')">New Orleans</button>
+      <button onclick="gotoCity('Shreveport')">Shreveport</button>
+      <button onclick="gotoCity('Lafayette')">Lafayette</button>
+      <button onclick="gotoCity('Lake Charles')">Lake Charles</button>
+      <button onclick="gotoCity('Monroe')">Monroe</button>
+    </div>
+
+    <div class="hr"></div>
+
+    <div id="status" class="muted"></div>
+    <div id="content"></div>
+
+    <div class="hr"></div>
+    <div class="small muted">
+      Data sources: NWS API (observations/forecast/alerts) + NWS MRMS radar WMS.
+    </div>
   </div>
 
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-    crossorigin=""
-  ></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
 
   <script>
-    // 1) Create the map (centered on Louisiana)
+    // -----------------------------
+    // Settings
+    // -----------------------------
+    const DEFAULT_POINT = { name: "Baton Rouge", lat: 30.4515, lon: -91.1871 };
+    const ALERT_REFRESH_MS = 2 * 60 * 1000;   // 2 minutes
+    const RADAR_BUST_MS   = 5 * 60 * 1000;   // 5 minutes
+
+    const cities = {
+      "Baton Rouge": { lat: 30.4515, lon: -91.1871, zoom: 10 },
+      "New Orleans": { lat: 29.9511, lon: -90.0715, zoom: 10 },
+      "Shreveport":  { lat: 32.5252, lon: -93.7502, zoom: 10 },
+      "Lafayette":   { lat: 30.2241, lon: -92.0198, zoom: 11 },
+      "Lake Charles":{ lat: 30.2266, lon: -93.2174, zoom: 11 },
+      "Monroe":      { lat: 32.5093, lon: -92.1193, zoom: 11 }
+    };
+
+    // -----------------------------
+    // Map setup
+    // -----------------------------
     const map = L.map('map', { zoomControl: true }).setView([30.95, -91.9], 7);
 
-    // 2) Add a base map (OpenStreetMap)
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    // 3) Add radar overlay (WMS)
-    // WMS endpoint for NWS MRMS base reflectivity:
+    const esriImagery = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 18, attribution: 'Tiles &copy; Esri' }
+    );
+
+    // Radar WMS overlay (MRMS base reflectivity)
     const radarWmsUrl =
       'https://mapservices.weather.noaa.gov/eventdriven/services/radar/radar_base_reflectivity/MapServer/WMSServer';
 
-    // ArcGIS WMS often uses numeric layer IDs. Here we use layer "1".
+    let radarCacheBuster = Date.now();
     const radar = L.tileLayer.wms(radarWmsUrl, {
       layers: '1',
       format: 'image/png',
       transparent: true,
       opacity: 0.55,
-      uppercase: true
-    }).addTo(map);
+      uppercase: true,
+      // Cache-bust param to force refresh periodically:
+      // Leaflet WMS doesn't have built-in cache buster, so we add it via "params"
+      // by overriding getTileUrl below.
+    });
 
-    // 4) Add a layer toggle control
-    L.control.layers(null, { 'Radar (Reflectivity)': radar }, { collapsed: false }).addTo(map);
+    // Override getTileUrl to append a cache buster
+    const _getTileUrl = radar.getTileUrl.bind(radar);
+    radar.getTileUrl = function(coords) {
+      const url = _getTileUrl(coords);
+      const join = url.includes('?') ? '&' : '?';
+      return url + join + 'cb=' + radarCacheBuster;
+    };
 
-    // 5) Click-to-current conditions (NWS API)
+    // Alerts layer group
+    const alertsLayer = L.geoJSON(null, {
+      style: f => {
+        const sev = f?.properties?.severity || '';
+        // simple severity styling by opacity/weight; keep it readable
+        let weight = 2, fillOpacity = 0.10;
+        if (sev === 'Extreme') fillOpacity = 0.25;
+        else if (sev === 'Severe') fillOpacity = 0.18;
+        else if (sev === 'Moderate') fillOpacity = 0.12;
+        return { weight, fillOpacity };
+      },
+      onEachFeature: (feature, layer) => {
+        const p = feature.properties || {};
+        const title = p.event || 'Alert';
+        const headline = p.headline || '';
+        const ends = p.ends || '';
+        const instruction = p.instruction || '';
+        const area = p.areaDesc || '';
+        layer.bindPopup(`
+          <div style="font:14px/1.35 system-ui;">
+            <div><strong>${title}</strong></div>
+            <div class="muted">${area}</div>
+            <div style="margin-top:6px;">${headline}</div>
+            ${ends ? `<div class="muted small" style="margin-top:6px;">Ends: ${ends}</div>` : ''}
+            ${instruction ? `<div style="margin-top:8px;"><strong>Instructions:</strong><br/>${instruction}</div>` : ''}
+          </div>
+        `);
+      }
+    });
+
+    // Layer controls
+    const baseMaps = { "OpenStreetMap": osm, "Satellite (Esri)": esriImagery };
+    const overlays = { "Radar (Reflectivity)": radar, "NWS Alerts": alertsLayer };
+    L.control.layers(baseMaps, overlays, { collapsed: false }).addTo(map);
+
+    // Add radar by default (wow factor)
+    radar.addTo(map);
+
+    // -----------------------------
+    // UI helpers
+    // -----------------------------
     const statusEl = document.getElementById('status');
     const contentEl = document.getElementById('content');
 
-    async function loadConditions(lat, lon) {
-      statusEl.textContent = 'Loading current conditions…';
+    function setStatus(msg, cls="muted") {
+      statusEl.className = cls;
+      statusEl.textContent = msg;
+    }
+
+    function fmt(val, digits=0) {
+      if (val === null || val === undefined) return '—';
+      if (Number.isFinite(val)) return val.toFixed(digits);
+      return String(val);
+    }
+
+    // Convert units (NWS often gives metric)
+    const cToF = c => (c * 9/5) + 32;
+    const mpsToMph = mps => mps * 2.2369362920544;
+
+    // -----------------------------
+    // Main: click-to-weather
+    // -----------------------------
+    let clickMarker = null;
+
+    async function loadPointWeather(lat, lon, label="Selected point") {
+      setStatus(`Loading weather for ${label}…`);
       contentEl.innerHTML = '';
+
+      // Marker
+      if (clickMarker) clickMarker.remove();
+      clickMarker = L.marker([lat, lon]).addTo(map);
 
       const pointsUrl = `https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`;
 
       try {
-        // A) Find which NWS office covers this point + where nearby stations are
+        // 1) Points metadata (find forecast + stations)
         const pRes = await fetch(pointsUrl, { headers: { 'Accept': 'application/geo+json' } });
-        if (!pRes.ok) throw new Error(`points request failed: ${pRes.status}`);
+        if (!pRes.ok) throw new Error(`NWS points failed (${pRes.status})`);
         const pJson = await pRes.json();
+        const props = pJson.properties;
 
-        const stationsUrl = pJson.properties.observationStations;
+        const stationsUrl = props.observationStations;
+        const hourlyUrl = props.forecastHourly;
 
-        // B) Get nearby stations, pick the first (usually nearest)
+        // 2) Nearby stations -> pick the first
         const sRes = await fetch(stationsUrl, { headers: { 'Accept': 'application/geo+json' } });
-        if (!sRes.ok) throw new Error(`stations request failed: ${sRes.status}`);
+        if (!sRes.ok) throw new Error(`Stations list failed (${sRes.status})`);
         const sJson = await sRes.json();
 
         const first = sJson.features?.[0];
         const stationId = first?.properties?.stationIdentifier;
-        const stationName = first?.properties?.name;
+        const stationName = first?.properties?.name || stationId;
 
-        if (!stationId) {
-          statusEl.textContent = '';
-          contentEl.innerHTML = `<div class="muted">No nearby station found for this point.</div>`;
-          return;
+        // 3) Latest observation
+        let obs = null;
+        if (stationId) {
+          const obsUrl = `https://api.weather.gov/stations/${stationId}/observations/latest`;
+          const oRes = await fetch(obsUrl, { headers: { 'Accept': 'application/geo+json' } });
+          if (oRes.ok) {
+            const oJson = await oRes.json();
+            obs = oJson.properties;
+          }
         }
 
-        // C) Get latest observation at that station
-        const obsUrl = `https://api.weather.gov/stations/${stationId}/observations/latest`;
-        const oRes = await fetch(obsUrl, { headers: { 'Accept': 'application/geo+json' } });
-        if (!oRes.ok) throw new Error(`observation request failed: ${oRes.status}`);
-        const oJson = await oRes.json();
-        const o = oJson.properties;
+        // 4) Hourly forecast (next 12)
+        let hours = [];
+        if (hourlyUrl) {
+          const hRes = await fetch(hourlyUrl, { headers: { 'Accept': 'application/geo+json' } });
+          if (hRes.ok) {
+            const hJson = await hRes.json();
+            hours = (hJson.properties?.periods || []).slice(0, 12);
+          }
+        }
 
-        // Convert °C to °F
-        const cToF = c => (c * 9/5) + 32;
+        // Render
+        setStatus(`Loaded: ${label}`, "ok");
 
-        const tempC = o.temperature?.value;
+        const tempC = obs?.temperature?.value;
         const tempF = (tempC != null) ? cToF(tempC) : null;
 
-        statusEl.textContent = '';
-        contentEl.innerHTML = `
-          <div><strong>Nearest station:</strong> ${stationName || stationId} (${stationId})</div>
-          <div><strong>Observed:</strong> ${o.timestamp || '—'}</div>
-          <div><strong>Temp:</strong> ${tempF != null ? tempF.toFixed(1) + ' °F' : '—'}</div>
-          <div><strong>Humidity:</strong> ${o.relativeHumidity?.value != null ? o.relativeHumidity.value.toFixed(0) + '%' : '—'}</div>
-          <div><strong>Wind:</strong>
-            ${o.windSpeed?.value != null ? o.windSpeed.value.toFixed(1) + ' m/s' : '—'}
-            @ ${o.windDirection?.value != null ? o.windDirection.value.toFixed(0) + '°' : '—'}
+        const windMps = obs?.windSpeed?.value;
+        const windMph = (windMps != null) ? mpsToMph(windMps) : null;
+
+        const dewC = obs?.dewpoint?.value;
+        const dewF = (dewC != null) ? cToF(dewC) : null;
+
+        const html = `
+          <div>
+            <span class="pill">${label}</span>
+            <span class="pill">Lat ${lat.toFixed(3)}, Lon ${lon.toFixed(3)}</span>
           </div>
-          <div class="small muted" style="margin-top:6px;">
-            Tip: Click other locations to compare conditions.
+
+          <div class="hr"></div>
+
+          <div><strong>Nearest observation station:</strong> ${stationName || '—'} ${stationId ? `(${stationId})` : ''}</div>
+          <div class="small muted">Observed: ${obs?.timestamp || '—'}</div>
+
+          <div class="kpi">
+            <div><strong>Temperature</strong>${tempF != null ? fmt(tempF,1) + " °F" : "—"}</div>
+            <div><strong>Dewpoint</strong>${dewF != null ? fmt(dewF,1) + " °F" : "—"}</div>
+            <div><strong>Humidity</strong>${obs?.relativeHumidity?.value != null ? fmt(obs.relativeHumidity.value,0) + "%" : "—"}</div>
+            <div><strong>Wind</strong>${windMph != null ? fmt(windMph,1) + " mph" : "—"} ${obs?.windDirection?.value != null ? "@ " + fmt(obs.windDirection.value,0) + "°" : ""}</div>
+          </div>
+
+          <div class="hr"></div>
+
+          <div><strong>Next 12 hours (forecast):</strong></div>
+          ${hours.length ? `
+            <div class="small muted" style="margin-top:4px;">
+              (Forecast is gridded for this point; obs are station-based.)
+            </div>
+            <ul style="padding-left:18px; margin:8px 0;">
+              ${hours.map(h => `
+                <li>
+                  <strong>${h.startTime?.slice(11,16) || ""}</strong> —
+                  ${h.temperature} ${h.temperatureUnit},
+                  ${h.shortForecast}
+                </li>
+              `).join('')}
+            </ul>
+          ` : `<div class="muted">Hourly forecast not available right now.</div>`}
+
+          <div class="hr"></div>
+
+          <div class="small muted">
+            Tip: Turn on <strong>NWS Alerts</strong> and click polygons for warning details.
           </div>
         `;
 
+        contentEl.innerHTML = html;
+
       } catch (err) {
-        statusEl.textContent = 'Could not load data for this point.';
-        contentEl.innerHTML = `<div class="muted">${String(err)}</div>`;
+        setStatus(`Error loading data for ${label}`, "err");
+        contentEl.innerHTML = `
+          <div class="err"><strong>Something blocked the weather data.</strong></div>
+          <div class="muted small" style="margin-top:6px;">
+            Details: ${String(err)}
+          </div>
+          <div class="muted small" style="margin-top:10px;">
+            Try clicking near a city/airport. If it still fails everywhere, NWS may be temporarily limiting requests.
+          </div>
+        `;
       }
     }
 
-    map.on('click', e => loadConditions(e.latlng.lat, e.latlng.lng));
+    // Click map
+    map.on('click', e => {
+      loadPointWeather(e.latlng.lat, e.latlng.lng, "Map click");
+    });
+
+    // Quick cities
+    window.gotoCity = function(name) {
+      const c = cities[name];
+      if (!c) return;
+      map.setView([c.lat, c.lon], c.zoom);
+      loadPointWeather(c.lat, c.lon, name);
+    };
+
+    // -----------------------------
+    // Alerts overlay
+    // -----------------------------
+    async function refreshAlerts() {
+      // Keep it simple: fetch alerts that affect Louisiana.
+      // NWS supports area filtering like "area=LA".
+      const url = "https://api.weather.gov/alerts/active?area=LA";
+      try {
+        const res = await fetch(url, { headers: { 'Accept': 'application/geo+json' } });
+        if (!res.ok) throw new Error(`alerts failed (${res.status})`);
+        const data = await res.json();
+
+        // Replace layer content
+        alertsLayer.clearLayers();
+        if (data.features?.length) {
+          alertsLayer.addData(data);
+        }
+      } catch (e) {
+        // don't spam the UI; alerts are optional
+        // (You’ll still see weather on click.)
+        console.warn("Alerts refresh failed:", e);
+      }
+    }
+
+    // -----------------------------
+    // Radar refresh (cache bust)
+    // -----------------------------
+    function refreshRadar() {
+      radarCacheBuster = Date.now();
+      // Leaflet will request new tiles as you pan/zoom;
+      // force redraw by toggling opacity quickly:
+      const op = radar.options.opacity;
+      radar.setOpacity(op - 0.0001);
+      radar.setOpacity(op);
+    }
+
+    // -----------------------------
+    // Start-up behavior (so it never looks empty)
+    // -----------------------------
+    (function init() {
+      // Auto-load default city so you SEE data immediately.
+      gotoCity(DEFAULT_POINT.name);
+
+      // Load alerts in the background
+      refreshAlerts();
+
+      // Periodic refresh
+      setInterval(refreshAlerts, ALERT_REFRESH_MS);
+      setInterval(refreshRadar, RADAR_BUST_MS);
+    })();
   </script>
 </body>
 </html>
